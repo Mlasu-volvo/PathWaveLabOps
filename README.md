@@ -2,6 +2,8 @@
 
 `backup.sh` creates dated, incremental snapshots of one or more source
 directories. It is intended for a Linux system with Bash and `rsync` installed.
+If failure emails are configured, it also requires Postfix's `sendmail`
+compatible command.
 
 ## Configuration
 
@@ -13,10 +15,16 @@ SOURCES=(
     "/labops/config"
 )
 BACKUP_ROOT="/labops/backup"
+ERROR_EMAIL_RECIPIENTS=(
+    "admin@example.com"
+    "operator@example.com"
+)
 ```
 
 - Add every directory to back up to the `SOURCES` array. Use absolute paths.
 - Set `BACKUP_ROOT` to the directory where snapshots and the log should be stored.
+- Add one or more email addresses to `ERROR_EMAIL_RECIPIENTS` to receive
+  notifications when the script fails. Leave the array empty to disable email.
 - Each source must exist and be readable by the user running the script.
 - When multiple sources are configured, each is stored in a subdirectory named
   after its source directory. Source directories must have unique names (for
@@ -49,6 +57,11 @@ backup.log
 4. It retains the newest 7 daily, 4 weekly, and 6 monthly snapshots, deleting
    older snapshots.
 5. Backup progress and `rsync` output are written to `BACKUP_ROOT/backup.log`.
+6. On an error, the script logs the failure and emails the configured
+   recipients with the exit status, line number, and error details. It uses
+   Postfix's `sendmail` interface; if email delivery fails, that failure is
+   also written to the log and the script still exits with its original error
+   status.
 
 The retention values can be changed with `KEEP_DAILY`, `KEEP_WEEKLY`, and
 `KEEP_MONTHLY` near the top of the script.
@@ -63,7 +76,9 @@ chmod +x /path/to/backup.sh
 ```
 
 The account running it needs permission to read the source directories and
-write to `BACKUP_ROOT`. Install `rsync` if it is not already available.
+write to `BACKUP_ROOT`. Install `rsync` if it is not already available. When
+email notifications are enabled, ensure the account can run the
+Postfix-provided `sendmail` command.
 
 ## Run daily at 19:00 with cron
 

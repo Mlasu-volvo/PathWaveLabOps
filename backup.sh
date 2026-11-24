@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCES=(
@@ -7,6 +7,9 @@ SOURCES=(
     # Add more source directories here; multi-source backups use each directory's name.
 )
 BACKUP_ROOT="/labops/backup"
+ERROR_EMAIL_RECIPIENTS=(
+    # "name@example.com"
+)
 
 DAILY_DIR="$BACKUP_ROOT/daily"
 WEEKLY_DIR="$BACKUP_ROOT/weekly"
@@ -17,13 +20,71 @@ KEEP_DAILY=7
 KEEP_WEEKLY=4
 KEEP_MONTHLY=6
 
+send_error_email() {
+    local status=$1
+    local message=$2
+    local line=$3
+    local sendmail_path
+    local recipient_header
+    local host
+
+    if [[ "${#ERROR_EMAIL_RECIPIENTS[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    if sendmail_path=$(command -v sendmail); then
+        :
+    elif [[ -x /usr/sbin/sendmail ]]; then
+        sendmail_path=/usr/sbin/sendmail
+    else
+        printf '[%s] ERROR: Cannot send failure notification; sendmail was not found.\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE" 2>/dev/null || true
+        return 0
+    fi
+
+    printf -v recipient_header '%s, ' "${ERROR_EMAIL_RECIPIENTS[@]}"
+    recipient_header=${recipient_header%, }
+    host=$(hostname 2>/dev/null || printf 'unknown host')
+
+    if {
+        printf 'To: %s\n' "$recipient_header"
+        printf 'Subject: Backup failed on %s\n' "$host"
+        printf 'Content-Type: text/plain; charset=UTF-8\n\n'
+        printf 'The backup script failed on %s.\n' "$host"
+        printf 'Date: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf 'Exit status: %s\n' "$status"
+        printf 'Line: %s\n' "$line"
+        printf 'Error: %s\n' "$message"
+    } | "$sendmail_path" -t 2>> "$LOG_FILE"; then
+        :
+    else
+        printf '[%s] ERROR: Sending the failure notification email failed.\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+report_error() {
+    local status=$1
+    local message=$2
+    local line=$3
+
+    trap - ERR
+    if ! printf '[%s] ERROR (exit %s, line %s): %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$line" "$message" >> "$LOG_FILE"; then
+        printf 'Backup failed (exit %s, line %s): %s\n' "$status" "$line" "$message" >&2
+    fi
+    send_error_email "$status" "$message" "$line"
+    exit "$status"
+}
+
+trap 'report_error "$?" "$BASH_COMMAND" "$LINENO"' ERR
+
 DATE=$(date +%Y-%m-%d)
 DAY_OF_WEEK=$(date +%u)  # 1 = Monday, 7 = Sunday
 DAY_OF_MONTH=$(date +%d) # 01 - 31
 
 if [[ "${#SOURCES[@]}" -eq 0 ]]; then
-    echo "ERROR: Configure at least one source directory in SOURCES." >&2
-    exit 1
+    report_error 1 "Configure at least one source directory in SOURCES." "$LINENO"
 fi
 
 for dir in "$DAILY_DIR" "$WEEKLY_DIR" "$MONTHLY_DIR"; do
@@ -41,22 +102,19 @@ if [[ "${#SOURCES[@]}" -gt 1 ]]; then
     declare -A source_names=()
     for source in "${SOURCES[@]}"; do
         if [[ ! -d "$source" ]]; then
-            echo "[$DATE $(date +%H:%M:%S)] ERROR: Source directory does not exist: $source" >> "$LOG_FILE"
-            exit 1
+            report_error 1 "Source directory does not exist: $source" "$LINENO"
         fi
 
         source_name=$(basename "$source")
         if [[ -n "${source_names[$source_name]:-}" ]]; then
-            echo "[$DATE $(date +%H:%M:%S)] ERROR: Multiple source directories share the name '$source_name'." >> "$LOG_FILE"
-            exit 1
+            report_error 1 "Multiple source directories share the name '$source_name'." "$LINENO"
         fi
         source_names[$source_name]=1
     done
 else
     for source in "${SOURCES[@]}"; do
         if [[ ! -d "$source" ]]; then
-            echo "[$DATE $(date +%H:%M:%S)] ERROR: Source directory does not exist: $source" >> "$LOG_FILE"
-            exit 1
+            report_error 1 "Source directory does not exist: $source" "$LINENO"
         fi
     done
 fi
