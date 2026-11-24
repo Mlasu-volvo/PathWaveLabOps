@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE="/labops/data"
-BACKUP_ROOT="/labops/labops-backup"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SOURCES=(
+    "/labops/data"
+    # Add more source directories here; multi-source backups use each directory's name.
+)
+BACKUP_ROOT="/labops/backup"
 
 DAILY_DIR="$BACKUP_ROOT/daily"
 WEEKLY_DIR="$BACKUP_ROOT/weekly"
@@ -17,6 +21,11 @@ DATE=$(date +%Y-%m-%d)
 DAY_OF_WEEK=$(date +%u)  # 1 = Monday, 7 = Sunday
 DAY_OF_MONTH=$(date +%d) # 01 - 31
 
+if [[ "${#SOURCES[@]}" -eq 0 ]]; then
+    echo "ERROR: Configure at least one source directory in SOURCES." >&2
+    exit 1
+fi
+
 for dir in "$DAILY_DIR" "$WEEKLY_DIR" "$MONTHLY_DIR"; do
     if [[ ! -d "$dir" ]]; then
         mkdir -p "$dir"
@@ -27,12 +36,50 @@ LATEST_DAILY=$(find "$DAILY_DIR" -mindepth 1 -maxdepth 1 -type d | sort | tail -
 DEST_DAILY="$DAILY_DIR/$DATE"
 
 RSYNC_OPTS=(-a --delete --numeric-ids)
-if [[ -n "$LATEST_DAILY" && "$LATEST_DAILY" != "$DEST_DAILY" ]]; then
-    RSYNC_OPTS+=(--link-dest="$LATEST_DAILY")
+
+if [[ "${#SOURCES[@]}" -gt 1 ]]; then
+    declare -A source_names=()
+    for source in "${SOURCES[@]}"; do
+        if [[ ! -d "$source" ]]; then
+            echo "[$DATE $(date +%H:%M:%S)] ERROR: Source directory does not exist: $source" >> "$LOG_FILE"
+            exit 1
+        fi
+
+        source_name=$(basename "$source")
+        if [[ -n "${source_names[$source_name]:-}" ]]; then
+            echo "[$DATE $(date +%H:%M:%S)] ERROR: Multiple source directories share the name '$source_name'." >> "$LOG_FILE"
+            exit 1
+        fi
+        source_names[$source_name]=1
+    done
+else
+    for source in "${SOURCES[@]}"; do
+        if [[ ! -d "$source" ]]; then
+            echo "[$DATE $(date +%H:%M:%S)] ERROR: Source directory does not exist: $source" >> "$LOG_FILE"
+            exit 1
+        fi
+    done
 fi
 
 echo "[$DATE $(date +%H:%M:%S)] Starting daily backup..." >> "$LOG_FILE"
-rsync "${RSYNC_OPTS[@]}" "$SOURCE/" "$DEST_DAILY/" >> "$LOG_FILE" 2>&1
+for source in "${SOURCES[@]}"; do
+    source_name=$(basename "$source")
+    destination="$DEST_DAILY"
+    link_dest="$LATEST_DAILY"
+
+    if [[ "${#SOURCES[@]}" -gt 1 ]]; then
+        destination="$DEST_DAILY/$source_name"
+        link_dest="$LATEST_DAILY/$source_name"
+    fi
+
+    source_rsync_opts=("${RSYNC_OPTS[@]}")
+    if [[ -n "$LATEST_DAILY" && "$LATEST_DAILY" != "$DEST_DAILY" && -d "$link_dest" ]]; then
+        source_rsync_opts+=(--link-dest="$link_dest")
+    fi
+
+    echo "[$DATE $(date +%H:%M:%S)] Backing up $source..." >> "$LOG_FILE"
+    rsync "${source_rsync_opts[@]}" "$source/" "$destination/" >> "$LOG_FILE" 2>&1
+done
 
 # Weekly backup every Sunday (7)
 if [[ "$DAY_OF_WEEK" -eq 7 ]]; then
