@@ -1,3 +1,5 @@
+> **AI-CREATED SCRIPT:** This backup script was created by AI Copilot Fusion.
+
 # LabOps Backup Script
 
 `backup.sh` creates dated, incremental snapshots of one or more source
